@@ -297,7 +297,7 @@ DD.makeSmoother=function(o){
 DD._i={runModel,prep,edgeSupport,valid,snapEdges};
 /* ---------- hàm chính ----------
    opts.fast: chỉ dùng mô hình nhẹ (xem trước camera). Mặc định: mô hình mạnh + kiểm tra + sửa cạnh gáy. */
-DD.detect = async function(src,opts){
+async function core(src,opts){
   opts=opts||{};
   if(!DD.ready) return null;
   try{
@@ -330,11 +330,194 @@ DD.detect = async function(src,opts){
     let q=best.q.map(p=>[Math.min(SW,Math.max(0,p[0])),Math.min(SH,Math.max(0,p[1]))]);
     if(best.q.split!==undefined){ q.split=best.q.split; }
     const cf=(best.q.conf||[]); q.minConf=cf.length?minOf(cf):1; q.meanConf=cf.length?cf.reduce((a,b)=>a+b,0)/cf.length:1;
-    if(opts.snap!==false && !/\?/.test(best.k)){
-      try{ const sq=snapEdges(src,q,{side:opts.snapSide||(src.videoWidth?800:1400)}); sq.split=q.split; sq.minConf=q.minConf; sq.meanConf=q.meanConf; sq.pre=q; q=sq; }catch(e){ console.warn('DocDet.snap',e); }
-    }
     q.ai=best.k; q.minSup=minOf(best.sup); q.ms=Math.round(performance.now()-t0); q.info=info;
     return q;
-  }catch(e){ console.warn('DocDet.detect',e); return null; }
+  }catch(e){ console.warn('DocDet.core',e); return null; }
+}
+/* ---------- tìm trang bên cạnh / tách sổ 2 trang bằng chính mô hình AI ----------
+   Mẹo: mô hình bắt rất tốt "trang giữa khung" khi trang bên kia bị khung ảnh cắt. Nên ta dựng 1 khung ảnh nắn thẳng, cắt sao cho
+   trang cần tìm nằm giữa còn trang kia bị cắt, rồi hỏi mô hình. Không dựa vào nếp gấp (dễ nhầm với đường kẻ bảng). */
+function solve8(A,b){
+  const n=8;
+  for(let i=0;i<n;i++){
+    let m=i; for(let r=i+1;r<n;r++) if(Math.abs(A[r][i])>Math.abs(A[m][i])) m=r;
+    [A[i],A[m]]=[A[m],A[i]]; [b[i],b[m]]=[b[m],b[i]];
+    const d=A[i][i]||1e-12;
+    for(let r=i+1;r<n;r++){ const f=A[r][i]/d; for(let c=i;c<n;c++) A[r][c]-=f*A[i][c]; b[r]-=f*b[i]; }
+  }
+  const x=new Array(n).fill(0);
+  for(let i=n-1;i>=0;i--){ let s=b[i]; for(let c=i+1;c<n;c++) s-=A[i][c]*x[c]; x[i]=s/(A[i][i]||1e-12); }
+  return x;
+}
+function homog(from,to){
+  const A=[],b=[];
+  for(let i=0;i<4;i++){ const [x,y]=from[i],[u,v]=to[i]; A.push([x,y,1,0,0,0,-x*u,-y*u]); b.push(u); A.push([0,0,0,x,y,1,-x*v,-y*v]); b.push(v); }
+  return solve8(A,b);
+}
+const hmap=(h,x,y)=>{ const d=h[6]*x+h[7]*y+1; return [(h[0]*x+h[1]*y+h[2])/d,(h[3]*x+h[4]*y+h[5])/d]; };
+let gC=null;
+function grab(src,maxSide){
+  const SW=src.videoWidth||src.width, SH=src.videoHeight||src.height, k=Math.min(1,maxSide/Math.max(SW,SH)), w=Math.round(SW*k), h=Math.round(SH*k);
+  if(!gC) gC=document.createElement('canvas'); gC.width=w; gC.height=h;
+  const x=gC.getContext('2d',{willReadFrequently:true}); x.imageSmoothingQuality='high'; x.drawImage(src,0,0,w,h);
+  return {k,w,h,d:x.getImageData(0,0,w,h).data};
+}
+/* khung nắn thẳng: vùng [Xa,Xb]x[Ya,Yb] của hệ toạ độ "trang chữ nhật" (trang = [0,Wp]x[0,Hp]) */
+function warpFrame(G,Hf,Xa,Xb,Ya,Yb,outMax){
+  const sc=outMax/Math.max(Xb-Xa,Yb-Ya), W=Math.max(8,Math.round((Xb-Xa)*sc)), Hh=Math.max(8,Math.round((Yb-Ya)*sc));
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=Hh;
+  const cx=cv.getContext('2d'), im=cx.createImageData(W,Hh), o=im.data, d=G.d, gw=G.w, gh=G.h;
+  for(let v=0;v<Hh;v++) for(let u=0;u<W;u++){
+    const [x0,y0]=hmap(Hf,Xa+(u+0.5)/sc,Ya+(v+0.5)/sc), x=x0*G.k-0.5, y=y0*G.k-0.5, oi=(v*W+u)*4;
+    if(x<0||y<0||x>gw-1.001||y>gh-1.001){ o[oi]=50; o[oi+1]=45; o[oi+2]=45; o[oi+3]=255; continue; }
+    const xi=x|0, yi=y|0, fx=x-xi, fy=y-yi, i0=(yi*gw+xi)*4, i1=i0+gw*4;
+    for(let c=0;c<3;c++){ const t=d[i0+c]*(1-fx)+d[i0+4+c]*fx, bt=d[i1+c]*(1-fx)+d[i1+4+c]*fx; o[oi+c]=t*(1-fy)+bt*fy; }
+    o[oi+3]=255;
+  }
+  cx.putImageData(im,0,0);
+  return {cv,sc,Xa,Ya};
+}
+const quadDims=q=>({w:(dist(q[0],q[1])+dist(q[3],q[2]))/2, h:(dist(q[0],q[3])+dist(q[1],q[2]))/2});
+const rectOf=(w,h)=>[[0,0],[w,0],[w,h],[0,h]];
+/* chạy mô hình trên khung, trả 4 góc theo toạ độ "trang chữ nhật" */
+async function runFrame(fr){
+  const q=await core(fr.cv,{});
+  if(!q) return null;
+  return q.map(p=>[fr.Xa+p[0]/fr.sc, fr.Ya+p[1]/fr.sc]);
+}
+const inImg=(q,SW,SH,m)=>q.every(p=>p[0]>=m&&p[1]>=m&&p[0]<=SW-m&&p[1]<=SH-m);
+/* tìm trang nằm bên ngoài cạnh e của trang P */
+async function findNeighbor(G,P,e,SW,SH){
+  const {w:Wp,h:Hp}=quadDims(P), Hf=homog(rectOf(Wp,Hp),P), horiz=(e===1||e===3), Ld=horiz?Wp:Hp, Lc=horiz?Hp:Wp;
+  let Xa=-0.14*Wp, Xb=1.14*Wp, Ya=-0.14*Hp, Yb=1.14*Hp;
+  if(e===1){ Xa=0.65*Wp; Xb=Wp+1.45*Wp; } else if(e===3){ Xa=-1.45*Wp; Xb=0.35*Wp; }
+  else if(e===2){ Ya=0.65*Hp; Yb=Hp+1.45*Hp; } else { Ya=-1.45*Hp; Yb=0.35*Hp; }
+  const fr=warpFrame(G,Hf,Xa,Xb,Ya,Yb,900), R=await runFrame(fr); if(!R) return null;
+  // trong toạ độ trang: a = khoảng cách ra ngoài từ cạnh gáy, c = vị trí dọc cạnh gáy
+  const A=R.map(p=>e===1?p[0]-Wp:e===3?-p[0]:e===2?p[1]-Hp:-p[1]), C=R.map(p=>horiz?p[1]:p[0]);
+  const sa=A.slice().sort((x,y)=>x-y), near=(sa[0]+sa[1])/2, far=(sa[2]+sa[3])/2;
+  if(DD.debug){ DD._dbg=DD._dbg||[]; DD._dbg.push({fn:'neighbor',e,near:+(near/Ld).toFixed(3),far:+((far-near)/Ld).toFixed(3),c:[+(Math.min.apply(null,C)/Lc).toFixed(2),+(Math.max.apply(null,C)/Lc).toFixed(2)],img:fr.cv.toDataURL('image/jpeg',0.6)}); }
+  if(Math.abs(near)>0.10*Ld || far-near<0.5*Ld || far-near>1.7*Ld) return null;
+  const c0=Math.min.apply(null,C), c1=Math.max.apply(null,C), ov=Math.min(c1,Lc)-Math.max(c0,0);
+  if(ov<0.6*Lc || (c1-c0)>1.5*Lc) return null;
+  const N=R.map(p=>hmap(Hf,p[0],p[1]));
+  if(N.some(p=>!isFinite(p[0])||!isFinite(p[1]))) return null;
+  N.split=(e+2)%4; N.rel=(far-near)/Ld; return N;
+}
+/* quad Q bao cả 2 trang: tách thành [trái, phải] bằng 2 khung (bên kia bị cắt) */
+async function cutSpread(G,Q){
+  const {w:Ws,h:Hs}=quadDims(Q), Hf=homog(rectOf(Ws,Hs),Q);
+  // thử vài mức cắt: trang kia phải còn thấy đủ rộng để mô hình thấy nếp gáy, nhưng không bị coi là cùng 1 trang
+  for(const u of [0.30,0.15]){
+    const fr=warpFrame(G,Hf,u*Ws,1.14*Ws,-0.14*Hs,1.14*Hs,900), fl=warpFrame(G,Hf,-0.14*Ws,(1-u)*Ws,-0.14*Hs,1.14*Hs,900);
+    const R=await runFrame(fr);
+    if(!R||(R[0][0]+R[3][0])/2<=u*Ws+0.05*Ws){ if(DD.debug){ DD._dbg=DD._dbg||[]; DD._dbg.push({fn:'cut',u,R:R&&R.map(p=>p.map(Math.round)),skip:'R sát mép cắt'}); } continue; }   // khung bên phải không thấy gáy: bỏ qua, đỡ chạy thêm khung trái
+    const Lq=await runFrame(fl);
+    if(DD.debug){ DD._dbg=DD._dbg||[]; DD._dbg.push({fn:'cut',u,R:R&&R.map(p=>p.map(Math.round)),L:Lq&&Lq.map(p=>p.map(Math.round)),Ws:Math.round(Ws)}); }
+    if(!R||!Lq) continue;
+    const xr=(R[0][0]+R[3][0])/2, xl=(Lq[1][0]+Lq[2][0])/2;                       // cạnh gáy của mỗi trang
+    const wr=(R[1][0]+R[2][0])/2-xr, wl=xl-(Lq[0][0]+Lq[3][0])/2;
+    const okAdj=Math.abs(xr-xl)<=0.07*Ws, okW=wr>0.25*Ws&&wr<0.75*Ws&&wl>0.25*Ws&&wl<0.75*Ws;
+    const okEnds=Math.abs((Lq[0][0]+Lq[3][0])/2)<=0.10*Ws && Math.abs((R[1][0]+R[2][0])/2-Ws)<=0.10*Ws;
+    const notBorder=xr>u*Ws+0.05*Ws && xl<(1-u)*Ws-0.05*Ws;                      // cạnh gáy tìm được nằm trong khung, không phải mép cắt
+    if(!(okAdj&&okW&&okEnds&&notBorder)) continue;
+    const toSrc=q=>q.map(p=>hmap(Hf,p[0],p[1]));
+    const pl=toSrc(Lq), pr=toSrc(R); pl.split=1; pr.split=3; pl.ratio=Math.min(wl,wr)/Math.max(wl,wr); return [pl,pr];
+  }
+  return null;
+}
+/* phương án dự phòng khi mô hình không tách được: tìm gáy bằng "bước nhảy độ sáng giữa 2 trang + nếp tối",
+   chỉ nhận khi đủ mạnh và liên tục từ trên xuống dưới (đường kẻ bảng không có bước nhảy độ sáng nên không đạt) */
+function creaseSplit(G,Q){
+  const {w:Ws,h:Hs}=quadDims(Q), Hf=homog(rectOf(Ws,Hs),Q), fr=warpFrame(G,Hf,0,Ws,0,Hs,600), cv=fr.cv, W=cv.width, H=cv.height;
+  const d=cv.getContext('2d').getImageData(0,0,W,H).data, strips=[];
+  for(let s=0;s<5;s++){ const r0=Math.floor(H*(0.1+0.16*s)), r1=Math.floor(H*(0.1+0.16*(s+1))), p=new Float32Array(W);
+    for(let x=0;x<W;x++){ let a=0; for(let y=r0;y<r1;y++){ const i=(y*W+x)*4; a+=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; } p[x]=a/(r1-r0); }
+    strips.push(p); }
+  const w=Math.floor(W*0.06), g0=Math.max(1,Math.floor(W*0.012)), lo=Math.floor(W*0.25), hi=Math.floor(W*0.75), mean=(p,a,b)=>{ let s=0; for(let i=a;i<b;i++) s+=p[i]; return s/(b-a); };
+  const res=strips.map(p=>{ const r=new Float32Array(W).fill(-1e9); for(let x=lo;x<hi;x++){ const L=mean(p,x-w,x-g0), R=mean(p,x+g0,x+w), c=mean(p,x-g0,x+g0+1); r[x]=Math.min(Math.abs(R-L),60)+2*Math.max(Math.min(L,R)-c,0); } return r; });
+  let bx=-1,bv=-1;
+  for(let x=lo+2;x<hi-2;x++){ let m=1e9; for(const r of res){ let s=0; for(let k=-2;k<=2;k++) s+=r[x+k]; m=Math.min(m,s/5); } if(m>bv){ bv=m; bx=x; } }
+  const out={score:bv,pages:null};
+  if(bv<7.5) return out;
+  const f=bx/W, sh=0.005, xl=(f-sh)*Ws, xr=(f+sh)*Ws, toSrc=q=>q.map(p=>hmap(Hf,p[0],p[1]));
+  const pl=toSrc([[0,0],[xl,0],[xl,Hs],[0,Hs]]), pr=toSrc([[xr,0],[Ws,0],[Ws,Hs],[xr,Hs]]);
+  pl.split=1; pr.split=3; pl.ratio=Math.min(f,1-f)/Math.max(f,1-f); out.pages=[pl,pr]; return out;
+}
+/* cạnh e của quad có "giấy" ngay bên ngoài không (gợi ý có trang bên cạnh) */
+function paperOutside(P,q,e){
+  const a=q[e], b=q[(e+1)%4], o1=q[(e+2)%4], o0=q[(e+3)%4];
+  const Le=dist(a,b); if(Le<10) return false;
+  let nx=-(b[1]-a[1])/Le, ny=(b[0]-a[0])/Le;
+  const cx=(q[0][0]+q[1][0]+q[2][0]+q[3][0])/4, cy=(q[0][1]+q[1][1]+q[2][1]+q[3][1])/4;
+  if(((a[0]+b[0])/2-cx)*nx+((a[1]+b[1])/2-cy)*ny<0){ nx=-nx; ny=-ny; }
+  const Ld=Math.abs(((a[0]+b[0])/2-(o0[0]+o1[0])/2)*nx+((a[1]+b[1])/2-(o0[1]+o1[1])/2)*ny);
+  const at=(x,y)=>{ const xi=Math.round(x*P.s), yi=Math.round(y*P.s); if(xi<0||yi<0||xi>=P.w||yi>=P.h) return NaN; return P.g[yi*P.w+xi]; };
+  const med=(a,mn)=>{ const z=a.filter(v=>!isNaN(v)).sort((p,r)=>p-r); return z.length>=mn?z[z.length>>1]:NaN; };
+  const ins=[], outs=[];
+  for(let i=0;i<5;i++){ const t=0.2+0.15*i, x0=a[0]+(b[0]-a[0])*t, y0=a[1]+(b[1]-a[1])*t;
+    ins.push(at(x0-nx*Ld*0.25,y0-ny*Ld*0.25));
+    for(const s of [0.10,0.25,0.40]) outs.push(at(x0+nx*Ld*s,y0+ny*Ld*s)); }
+  const pi=med(ins,3), po=med(outs,8); if(DD.debug){ DD._dbg=DD._dbg||[]; DD._dbg.push({fn:'paperOutside',e,pi,po}); } return !isNaN(pi)&&!isNaN(po)&&po>=0.62*pi&&po>=110;
+}
+const inQuad=(q,x,y)=>{ let s=0; for(let i=0;i<4;i++){ const a=q[i],b=q[(i+1)%4], c=(b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0]); if(c>0) s++; else if(c<0) s--; } return Math.abs(s)===4; };
+const cen=q=>[(q[0][0]+q[1][0]+q[2][0]+q[3][0])/4,(q[0][1]+q[1][1]+q[2][1]+q[3][1])/4];
+function pickPageIdx(pages,SW,SH){
+  const c=[SW/2,SH/2], inside=pages.map(p=>inQuad(p,c[0],c[1]));
+  if(inside[0]!==inside[1]) return inside[0]?0:1;
+  const d=pages.map(p=>dist(cen(p),c)); return d[0]<=d[1]?0:1;
+}
+let spreadMemo=null;
+async function trySpread(src,q,opts){
+  const SW=src.videoWidth||src.width, SH=src.videoHeight||src.height, diag=Math.hypot(SW,SH);
+  const now=performance.now();
+  if(spreadMemo && now-spreadMemo.t<8000 && spreadMemo.none && Math.max.apply(null,q.map((p,i)=>dist(p,spreadMemo.q[i])))/diag<0.03) return null;
+  const G=grab(src,1600), qd=quadDims(q); let pages=null, how='';
+  if(qd.w/qd.h>=1.05){
+    const cr=creaseSplit(G,q);                                   // chấm nhanh: quá phẳng (không có dấu hiệu gáy) thì khỏi chạy thêm mô hình
+    if(cr.score>=4){ const cut=await cutSpread(G,q); if(cut){ pages=cut; how='cut'; } }
+    if(!pages && qd.w/qd.h>=1.25 && cr.pages){ pages=cr.pages; how='crease'; }
+  }
+  if(!pages){
+    const P=prep(src,opts.edgeSide||480), cand=[];
+    for(let e=0;e<4;e++){ if(q.split===e || paperOutside(P,q,e)) cand.push(e); }
+    cand.sort((a,b)=>(a===q.split?-1:0)-(b===q.split?-1:0));
+    for(const e of cand.slice(0,2)){
+      const N=await findNeighbor(G,q,e,SW,SH);
+      if(N){ const P2=q.map(p=>p.slice()); P2.split=e; pages=(e===1||e===2)?[P2,N]:[N,P2]; how='neighbor'; break; }
+    }
+  }
+  if(!pages){ spreadMemo={t:now,q:q.map(p=>p.slice()),none:true}; return null; }
+  spreadMemo=null;
+  const m=-0.004*Math.max(SW,SH), nb=pages.find(p=>p.rel!==undefined), sizeOk=(how==='cut'||how==='crease')?pages[0].ratio>=0.6:(nb&&nb.rel>=0.6&&nb.rel<=1.4), full=pages.every(p=>inImg(p,SW,SH,m))&&!!sizeOk;
+  return {pages,pick:pickPageIdx(pages,SW,SH),full,how};
+}
+DD._i.trySpread=trySpread; DD._i.core=core;
+/* ---------- hàm chính ----------
+   opts.fast: chỉ dùng mô hình nhẹ (xem trước khi mô hình mạnh chưa nạp). opts.spread=false: không tìm trang bên cạnh.
+   Kết quả q = trang ở giữa; q.spread = {pages:[trái,phải], pick, full} khi thấy 2 trang. */
+DD.detect = async function(src,opts){
+  opts=opts||{};
+  if(!DD.ready) return null;
+  let q=await core(src,opts); if(!q) return null;
+  let spread=null;
+  if(sess.S && !opts.fast && opts.spread!==false){
+    try{ spread=await trySpread(src,q,opts); }catch(e){ console.warn('DocDet.spread',e); }
+  }
+  const snapOne=pg=>{
+    if(opts.snap===false) return pg;
+    try{ const sq=snapEdges(src,pg,{side:opts.snapSide||(src.videoWidth?800:1400)}); sq.split=pg.split; return sq; }catch(e){ return pg; }
+  };
+  const keep=()=>({ai:q.ai,minConf:q.minConf,meanConf:q.meanConf,minSup:q.minSup,info:q.info,ms:q.ms});
+  if(spread){
+    const pages=spread.pages.map(pg=>{ const c=snapOne(pg); c.split=pg.split; return c; });
+    const main=pages[spread.pick];
+    Object.assign(main,keep()); main.pre=q;
+    main.spread={pages,pick:spread.pick,full:spread.full,how:spread.how};
+    return main;
+  }
+  if(!/\?/.test(q.ai)){ const sq=snapOne(q); Object.assign(sq,keep()); sq.pre=q; q=sq; }
+  return q;
 };
+
 })();

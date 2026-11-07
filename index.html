@@ -1035,8 +1035,8 @@ function qAlign(q,ref){
 }
 function qDiff(a,b,diag){ return Math.max(...a.map((p,i)=>dist(p,b[i])))/diag; }
 const qLerp=(a,b,t)=>a.map((p,i)=>[p[0]+(b[i][0]-p[0])*t, p[1]+(b[i][1]-p[1])*t]);
-let camSm=null, camAgree=0;
-function camReset(){ if(camSm) camSm.reset(); camAgree=0; camQ=null; camCand=null; camCandN=0; camMiss=0; camStable=0; camAutoCnt=0; camArmed=true; }
+let camSm=null, camAgree=0, camQ2=null, camQ2Miss=0, camSpreadHint=false;
+function camReset(){ if(camSm) camSm.reset(); camAgree=0; camQ2=null; camQ2Miss=0; camSpreadHint=false; camQ=null; camCand=null; camCandN=0; camMiss=0; camStable=0; camAutoCnt=0; camArmed=true; }
 function camMap(){
   const v=$('#camVideo'), cv=$('#camOverlay'), cw=cv.clientWidth, ch=cv.clientHeight;
   const s=Math.max(cw/v.videoWidth, ch/v.videoHeight);
@@ -1048,11 +1048,16 @@ function camDraw(){
   if(cv.width!==Math.round(cv.clientWidth*dpr)||cv.height!==Math.round(cv.clientHeight*dpr)){ cv.width=Math.round(cv.clientWidth*dpr); cv.height=Math.round(cv.clientHeight*dpr); }
   const x=cv.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0); x.clearRect(0,0,cv.width,cv.height);
   if(!camQ||!v.videoWidth) return;
-  const m=camMap(), P=camQ.map(([a,b])=>[m.ox+a*m.s, m.oy+b*m.s]), locked=camStable>=camLockN();
-  x.beginPath(); P.forEach((p,i)=>i?x.lineTo(p[0],p[1]):x.moveTo(p[0],p[1])); x.closePath();
-  x.fillStyle=locked?'rgba(63,191,164,.26)':'rgba(255,255,255,.10)'; x.fill();
-  x.lineWidth=locked?4:2; x.strokeStyle=locked?'#3fbfa4':'rgba(255,255,255,.85)'; x.stroke();
-  if(locked){ P.forEach(p=>{ x.beginPath(); x.arc(p[0],p[1],6,0,Math.PI*2); x.fillStyle='#3fbfa4'; x.fill(); }); }
+  const m=camMap(), locked=camStable>=camLockN();
+  const one=Q=>{
+    const P=Q.map(([a,b])=>[m.ox+a*m.s, m.oy+b*m.s]);
+    x.beginPath(); P.forEach((p,i)=>i?x.lineTo(p[0],p[1]):x.moveTo(p[0],p[1])); x.closePath();
+    x.fillStyle=locked?'rgba(63,191,164,.26)':'rgba(255,255,255,.10)'; x.fill();
+    x.lineWidth=locked?4:2; x.strokeStyle=locked?'#3fbfa4':'rgba(255,255,255,.85)'; x.stroke();
+    if(locked){ P.forEach(p=>{ x.beginPath(); x.arc(p[0],p[1],6,0,Math.PI*2); x.fillStyle='#3fbfa4'; x.fill(); }); }
+  };
+  if(bookMode&&camQ2) one(camQ2);   // chế độ Sổ 2 trang: vẽ cả 2 khung
+  one(camQ);
 }
 async function camTick(){
   const v=$('#camVideo'); if(!v.videoWidth||camBusy) return;
@@ -1065,6 +1070,15 @@ async function camTick(){
   }
   else q=detectPage(v,{nullOnFail:true,maxSide:360,refineSide:640,book:true});
   if(camBusy||!camStream) return;
+  let q2n=null, spHint=false;
+  if(q&&q.spread){
+    const sp=q.spread;
+    if(bookMode){ const base=q; q=sp.pages[0]; q.ai=base.ai; q.meanConf=base.meanConf; q2n=sp.pages[1]; }   // Sổ 2 trang: theo dõi trang trái, vẽ thêm trang phải
+    else spHint=!!sp.full;                                                                                    // đang tắt: lấy trang giữa, chỉ nhắc
+  }
+  camSpreadHint=spHint;
+  if(bookMode&&q2n){ const a=qAlign(q2n,camQ2||q2n); camQ2=(camQ2&&qDiff(a,camQ2,diag)<0.03)?qLerp(camQ2,a,0.5):q2n; camQ2Miss=0; }
+  else if(camQ2&&(++camQ2Miss>2||!bookMode)) camQ2=null;
   if(!q){ camMiss++; if(camMiss>(camSlow()?3:8)) camReset(); camAutoCnt=0; camAgree=0; }
   else if(camSlow()){
     // nhịp chậm (AI mạnh): 2 lần dò liên tiếp khớp nhau -> khoá khung; lần dò kế tiếp vẫn khớp -> tự chụp. Khung đổi nhiều -> bám theo ngay.
@@ -1106,6 +1120,8 @@ async function camTick(){
     else if(camQ){ h.textContent='Đang bắt khung… giữ yên máy'; h.className=''; }
     else { h.textContent='Để cả trang giấy lọt màn hình, nền tối càng tốt'; h.className=''; }
   }
+  if(camSpreadHint&&!bookMode){ h.textContent='Thấy 2 trang — bật Sổ 2 trang để tách, hoặc đưa máy lại gần 1 trang'; h.className=''; }
+  else if(bookMode&&camQ2&&locked&&!camArmed){ h.textContent='Đã chụp 2 trang. Dời sang trang khác'; h.className='ok'; }
   camDraw();
 }
 function camUI(){
@@ -1159,8 +1175,11 @@ async function camShoot(){
       const shown=camQ.map(p=>[p[0]*k,p[1]*k]), diag=Math.hypot(c.width,c.height);
       if(!q) q=shown;   // ảnh chụp nét hơn ảnh xem trước nên ưu tiên kết quả trên ảnh chụp
     }
+    let q2=null;
+    if(bookMode&&q&&q.spread){ const pg=q.spread.pages; q=pg[0]; q2=pg[1]; }
     if(!q){ q=fullQuad(c); toast('Chưa thấy mép giấy nên giữ nguyên ảnh. Vào Cắt để chỉnh.'); }
     pages.push(newPage(c,q));
+    if(q2){ pages.push(newPage(c,q2)); toast('Đã tách 2 trang (trái trước, phải sau)'); }
     camUI();
   }catch(e){ toast('Chụp bị lỗi, thử lại.'); }
   camBusy=false;
@@ -1171,7 +1190,7 @@ $('#camDone').onclick=finishCam;
 $('#camStack').onclick=finishCam;
 $('#camClose').onclick=()=>{ if(pages.length){ finishCam(); } else { stopCam(); if(!target) drawDocs(); } };
 $('#camAuto').onclick=()=>{ camAuto=!camAuto; store.set('auto',camAuto?'1':'0'); camAutoCnt=0; camArmed=true; camUI(); };
-$('#camBook').onclick=()=>{ bookMode=!bookMode; store.set('book',bookMode?'1':'0'); camReset(); camUI(); toast(bookMode?'Chế độ sổ: để trang cần chụp ở giữa màn hình':'Đã tắt chế độ sổ'); };
+$('#camBook').onclick=()=>{ bookMode=!bookMode; store.set('book',bookMode?'1':'0'); camReset(); camUI(); toast(bookMode?'Chế độ sổ: thấy cả quyển sổ mở thì tự tách thành 2 trang riêng':'Đã tắt chế độ sổ: chỉ lấy trang ở giữa màn hình'); };
 $('#mOne').onclick=()=>{ shotMode='one'; store.set('shotMode','one'); camUI(); };
 $('#mMany').onclick=()=>{ shotMode='many'; store.set('shotMode','many'); camUI(); };
 $('#camTorch').onclick=async()=>{
@@ -1486,7 +1505,7 @@ async function importFiles(fileList){
   const start=pages.length;
   for(let i=0;i<files.length;i++){
     busy(true, files.length>1?`Đang cắt ảnh ${i+1}/${files.length}…`:'Đang cắt ảnh…'); await tick();
-    try{ const bc=await fileToCanvas(files[i]); pages.push(newPage(bc, await detectSmart(bc,{book:true}))); }catch(e){ toast('Không đọc được một ảnh, hãy thử ảnh khác.'); }
+    try{ const bc=await fileToCanvas(files[i]); let q=await detectSmart(bc,{book:true}), q2=null; if(bookMode&&q&&q.spread){ q2=q.spread.pages[1]; q=q.spread.pages[0]; } pages.push(newPage(bc,q)); if(q2) pages.push(newPage(bc,q2)); }catch(e){ toast('Không đọc được một ảnh, hãy thử ảnh khác.'); }
   }
   busy(false);
   if(pages.length>start) openReview(start);
