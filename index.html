@@ -13,6 +13,7 @@
 <meta name="theme-color" content="#0d6b5a">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap">
 <script src="jspdf.umd.min.js"></script>
+<script src="docdet.js"></script>
 <style>
 /* Bố cục: app scan một tay — trang chủ là lưới tài liệu + thanh dưới có nút chụp tròn; camera, xem lại và cắt góc là các màn toàn màn hình nền tối */
 :root{
@@ -804,6 +805,19 @@ function detectQuad(src, opts){
   if(dist(q[0],q[1])<SW*0.15 || dist(q[0],q[3])<SH*0.15) return fail();
   return q;
 }
+/* ---------- AI nhận khung (DocAligner, chạy trên máy; lỗi thì dùng thuật toán cũ ở trên) ---------- */
+function aiStart(){
+  try{
+    if(!window.DocDet||DocDet.loading) return;
+    DocDet.init({base:'./',models:['L','S'],onModel:k=>{ if(k==='S') toast('Bộ nhận khung AI đã sẵn sàng, dùng được cả khi mất mạng.'); }});
+  }catch(e){}
+}
+const aiOn=()=>!!(window.DocDet&&DocDet.ready&&!DocDet.failed);
+async function detectSmart(src,opts){
+  if(aiOn()){ try{ const q=await DocDet.detect(src,{fast:false}); if(q) return q; }catch(e){} }
+  return detectPage(src,opts);
+}
+window.addEventListener('load',()=>setTimeout(aiStart,1000));
 function autoPage(base){
   const q=detectQuad(base);
   return {id:uid(), base, quad:q, warped:isFull(q,base)?null:warp(base,q), rot:0};
@@ -979,7 +993,7 @@ const edUp=()=>{ if(ed.drag>=0){ ed.drag=-1; edDraw(); } };
 $('#edCanvas').addEventListener('pointerup',edUp);
 $('#edCanvas').addEventListener('pointercancel',edUp);
 $('#edFull').onclick=()=>{ ed.q=fullQuad(ed.page.base); edDraw(); };
-$('#edAuto').onclick=()=>{ ed.q=detectPage(ed.page.base,{book:bookMode}); edDraw(); };
+$('#edAuto').onclick=async()=>{ busy(true,'Đang tìm mép giấy…'); await tick(); try{ ed.q=(await detectSmart(ed.page.base,{book:bookMode})).map(v=>v.slice()); }catch(e){} busy(false); edDraw(); };
 $('#edCancel').onclick=()=>{ $('#editor').hidden=true; const r=ed.resolve; ed.resolve=null; r&&r(); };
 $('#edOk').onclick=async()=>{
   const p=ed.page, q=ed.q.map(v=>v.slice());
@@ -1004,7 +1018,9 @@ let camCand=null, camCandN=0, camMiss=0, camStable=0, camArmed=true, camAutoCnt=
 let camAuto = store.get('auto','1')==='1';
 let shotMode = store.get('shotMode','many');
 let bookMode = store.get('book','0')==='1';
-const AUTO_TICKS=6;
+let camTickMs=160;   // thời gian mỗi lần dò (làm mượt); AI chậm hơn nên cần ít lần dò hơn để khoá/tự chụp
+const AUTO_TICKS_N=()=>Math.max(2,Math.min(6,Math.round(1000/camTickMs)));
+const camLockN=()=>camTickMs>300?2:3;
 function qAlign(q,ref){
   let best=q, bd=1e18;
   for(let k=0;k<4;k++){ const r=[0,1,2,3].map(i=>q[(i+k)%4]); const d=r.reduce((s,p,i)=>s+dist(p,ref[i]),0); if(d<bd){bd=d;best=r;} }
@@ -1024,16 +1040,19 @@ function camDraw(){
   if(cv.width!==Math.round(cv.clientWidth*dpr)||cv.height!==Math.round(cv.clientHeight*dpr)){ cv.width=Math.round(cv.clientWidth*dpr); cv.height=Math.round(cv.clientHeight*dpr); }
   const x=cv.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0); x.clearRect(0,0,cv.width,cv.height);
   if(!camQ||!v.videoWidth) return;
-  const m=camMap(), P=camQ.map(([a,b])=>[m.ox+a*m.s, m.oy+b*m.s]), locked=camStable>=3;
+  const m=camMap(), P=camQ.map(([a,b])=>[m.ox+a*m.s, m.oy+b*m.s]), locked=camStable>=camLockN();
   x.beginPath(); P.forEach((p,i)=>i?x.lineTo(p[0],p[1]):x.moveTo(p[0],p[1])); x.closePath();
   x.fillStyle=locked?'rgba(63,191,164,.26)':'rgba(255,255,255,.10)'; x.fill();
   x.lineWidth=locked?4:2; x.strokeStyle=locked?'#3fbfa4':'rgba(255,255,255,.85)'; x.stroke();
   if(locked){ P.forEach(p=>{ x.beginPath(); x.arc(p[0],p[1],6,0,Math.PI*2); x.fillStyle='#3fbfa4'; x.fill(); }); }
 }
-function camTick(){
+async function camTick(){
   const v=$('#camVideo'); if(!v.videoWidth||camBusy) return;
   const diag=Math.hypot(v.videoWidth,v.videoHeight);
-  let q=detectPage(v,{nullOnFail:true,maxSide:360,refineSide:640,book:bookMode});
+  let q;
+  if(aiOn()){ const t0=performance.now(); try{ q=await DocDet.detect(v,{fast:!DocDet.has('S'),edgeSide:320}); }catch(e){ q=null; } camTickMs=camTickMs*0.7+(performance.now()-t0)*0.3; }
+  else q=detectPage(v,{nullOnFail:true,maxSide:360,refineSide:640,book:bookMode});
+  if(camBusy||!camStream) return;
   if(!q){ camMiss++; if(camMiss>8) camReset(); camAutoCnt=0; }
   else {
     camMiss=0;
@@ -1053,7 +1072,7 @@ function camTick(){
       }
     }
   }
-  const locked=camQ&&camStable>=3, h=$('#camHint');
+  const locked=camQ&&camStable>=camLockN(), h=$('#camHint'), AUTO_TICKS=AUTO_TICKS_N();
   if(locked && camAuto && camArmed){
     camAutoCnt++; camRing(camAutoCnt/AUTO_TICKS);
     h.textContent='Giữ yên… đang tự chụp'; h.className='ok';
@@ -1090,7 +1109,8 @@ async function openCam(ret){
   camTorchOn=false;
   try{ const tr=camStream.getVideoTracks()[0], caps=tr.getCapabilities?tr.getCapabilities():{}; $('#camTorch').hidden=!caps.torch; $('#camTorch').classList.remove('on'); }catch(e){ $('#camTorch').hidden=true; }
   camReset(); camUI();
-  clearTimeout(camTimer); const loop=()=>{ if(!camStream) return; const t0=performance.now(); try{ camTick(); }catch(e){} camTimer=setTimeout(loop, Math.max(60,160-(performance.now()-t0))); }; camTimer=setTimeout(loop,200);
+  aiStart();
+  clearTimeout(camTimer); const loop=async()=>{ if(!camStream) return; const t0=performance.now(); try{ await camTick(); }catch(e){} if(!camStream) return; camTimer=setTimeout(loop, Math.max(30,120-(performance.now()-t0))); }; camTimer=setTimeout(loop,200);
 }
 function stopCam(){
   clearTimeout(camTimer); camTimer=null;
@@ -1111,7 +1131,7 @@ async function camShoot(){
   try{ if(navigator.vibrate) navigator.vibrate(30); }catch(e){}
   await tick();
   try{
-    let q=detectPage(c,{nullOnFail:true,book:bookMode});
+    let q=await detectSmart(c,{nullOnFail:true,book:bookMode});
     if(camQ){
       const shown=camQ.map(p=>[p[0]*k,p[1]*k]), diag=Math.hypot(c.width,c.height);
       if(!q) q=shown;   // ảnh chụp nét hơn ảnh xem trước nên ưu tiên kết quả trên ảnh chụp
@@ -1443,7 +1463,7 @@ async function importFiles(fileList){
   const start=pages.length;
   for(let i=0;i<files.length;i++){
     busy(true, files.length>1?`Đang cắt ảnh ${i+1}/${files.length}…`:'Đang cắt ảnh…'); await tick();
-    try{ pages.push(newPage(await fileToCanvas(files[i]))); }catch(e){ toast('Không đọc được một ảnh, hãy thử ảnh khác.'); }
+    try{ const bc=await fileToCanvas(files[i]); pages.push(newPage(bc, await detectSmart(bc,{book:bookMode}))); }catch(e){ toast('Không đọc được một ảnh, hãy thử ảnh khác.'); }
   }
   busy(false);
   if(pages.length>start) openReview(start);
