@@ -1023,8 +1023,8 @@ let camAuto = store.get('auto','1')==='1';
 let shotMode = store.get('shotMode','many');
 let bookMode = store.get('book','0')==='1';
 let camTickMs=160;   // thời gian mỗi lần dò (làm mượt); AI chậm hơn nên cần ít lần dò hơn để khoá/tự chụp
-const PREVIEW_SIZE=224;   // cỡ ảnh đưa vào mô hình mạnh khi xem trước (lúc chụp luôn dùng 256)
-const PREVIEW_GAP=1000;   // mô hình mạnh dò khoảng 1 lần/giây; giữa các lần giữ nguyên khung cũ
+const PREVIEW_SIZE=256;   // cỡ ảnh đưa vào mô hình mạnh khi xem trước (224 nhanh hơn ~17% nhưng sai 1/12 ảnh)
+const PREVIEW_GAP=850;    // nhịp dò mong muốn 1 lần/giây; dò lâu hơn thì tự giãn ra (mỗi lần chờ dò xong mới hẹn lần sau, không chồng nhau)
 const camSlow=()=>aiOn()&&DocDet.has('S');
 const AUTO_TICKS_N=()=>camSlow()?2:Math.max(2,Math.min(6,Math.round(1000/camTickMs)));
 const camLockN=()=>camSlow()?2:(camTickMs>300?2:3);
@@ -1035,7 +1035,8 @@ function qAlign(q,ref){
 }
 function qDiff(a,b,diag){ return Math.max(...a.map((p,i)=>dist(p,b[i])))/diag; }
 const qLerp=(a,b,t)=>a.map((p,i)=>[p[0]+(b[i][0]-p[0])*t, p[1]+(b[i][1]-p[1])*t]);
-function camReset(){ camQ=null; camCand=null; camCandN=0; camMiss=0; camStable=0; camAutoCnt=0; camArmed=true; }
+let camPrev=null, camAgree=0;
+function camReset(){ camPrev=null; camAgree=0; camQ=null; camCand=null; camCandN=0; camMiss=0; camStable=0; camAutoCnt=0; camArmed=true; }
 function camMap(){
   const v=$('#camVideo'), cv=$('#camOverlay'), cw=cv.clientWidth, ch=cv.clientHeight;
   const s=Math.max(cw/v.videoWidth, ch/v.videoHeight);
@@ -1064,7 +1065,17 @@ async function camTick(){
   }
   else q=detectPage(v,{nullOnFail:true,maxSide:360,refineSide:640,book:bookMode});
   if(camBusy||!camStream) return;
-  if(!q){ camMiss++; if(camMiss>8) camReset(); camAutoCnt=0; }
+  if(!q){ camMiss++; if(camMiss>(camSlow()?3:8)) camReset(); camAutoCnt=0; camAgree=0; }
+  else if(camSlow()){
+    // nhịp chậm (AI mạnh): 2 lần dò liên tiếp khớp nhau -> khoá khung; lần dò kế tiếp vẫn khớp -> tự chụp. Khung đổi nhiều -> bám theo ngay.
+    camMiss=0;
+    const ref=camPrev||camQ; if(ref) q=qAlign(q,ref);
+    const d=ref?qDiff(q,ref,diag):1;
+    camPrev=q.map(p=>p.slice());
+    if(d<0.02){ camAgree++; camQ=q; }
+    else { camAgree=0; camQ=q; camAutoCnt=0; if(d>=0.06) camArmed=true; }
+    camStable=camAgree+1;
+  }
   else {
     camMiss=0;
     if(!camQ){ camQ=q; camStable=1; }
@@ -1121,7 +1132,7 @@ async function openCam(ret){
   try{ const tr=camStream.getVideoTracks()[0], caps=tr.getCapabilities?tr.getCapabilities():{}; $('#camTorch').hidden=!caps.torch; $('#camTorch').classList.remove('on'); }catch(e){ $('#camTorch').hidden=true; }
   camReset(); camUI();
   aiStart();
-  clearTimeout(camTimer); const loop=async()=>{ if(!camStream) return; const t0=performance.now(); try{ await camTick(); }catch(e){} if(!camStream) return; camTimer=setTimeout(loop, Math.max(30,(camSlow()?PREVIEW_GAP:120)-(performance.now()-t0))); }; camTimer=setTimeout(loop,200);
+  clearTimeout(camTimer); const loop=async()=>{ if(!camStream) return; const t0=performance.now(); try{ await camTick(); }catch(e){} if(!camStream) return; camTimer=setTimeout(loop, Math.max(camSlow()?80:30,(camSlow()?PREVIEW_GAP:120)-(performance.now()-t0))); }; camTimer=setTimeout(loop,200);
 }
 function stopCam(){
   clearTimeout(camTimer); camTimer=null;
