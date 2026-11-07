@@ -460,6 +460,15 @@ function paperOutside(P,q,e){
     for(const s of [0.10,0.25,0.40]) outs.push(at(x0+nx*Ld*s,y0+ny*Ld*s)); }
   const pi=med(ins,3), po=med(outs,8); if(DD.debug){ DD._dbg=DD._dbg||[]; DD._dbg.push({fn:'paperOutside',e,pi,po}); } return !isNaN(pi)&&!isNaN(po)&&po>=0.62*pi&&po>=110;
 }
+/* còn chỗ trong khung ảnh cho nguyên 1 trang bên ngoài cạnh e không (không thì bỏ qua cho đỡ tốn thời gian) */
+function roomOutside(q,e,SW,SH){
+  const a=q[e], b=q[(e+1)%4], o1=q[(e+2)%4], o0=q[(e+3)%4], Le=dist(a,b); if(Le<10) return 0;
+  let nx=-(b[1]-a[1])/Le, ny=(b[0]-a[0])/Le; const cx=(q[0][0]+q[1][0]+q[2][0]+q[3][0])/4, cy=(q[0][1]+q[1][1]+q[2][1]+q[3][1])/4;
+  const mx=(a[0]+b[0])/2, my=(a[1]+b[1])/2; if((mx-cx)*nx+(my-cy)*ny<0){ nx=-nx; ny=-ny; }
+  const Ld=Math.abs((mx-(o0[0]+o1[0])/2)*nx+(my-(o0[1]+o1[1])/2)*ny); let t=0;
+  while(t<3*Ld){ const x=mx+nx*t, y=my+ny*t; if(x<0||y<0||x>SW||y>SH) break; t+=Ld/20; }
+  return t/Ld;
+}
 const inQuad=(q,x,y)=>{ let s=0; for(let i=0;i<4;i++){ const a=q[i],b=q[(i+1)%4], c=(b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0]); if(c>0) s++; else if(c<0) s--; } return Math.abs(s)===4; };
 const cen=q=>[(q[0][0]+q[1][0]+q[2][0]+q[3][0])/4,(q[0][1]+q[1][1]+q[2][1]+q[3][1])/4];
 function pickPageIdx(pages,SW,SH){
@@ -480,7 +489,7 @@ async function trySpread(src,q,opts){
   }
   if(!pages){
     const P=prep(src,opts.edgeSide||480), cand=[];
-    for(let e=0;e<4;e++){ if(q.split===e || paperOutside(P,q,e)) cand.push(e); }
+    for(let e=0;e<4;e++){ if((q.split===e || paperOutside(P,q,e)) && roomOutside(q,e,SW,SH)>=0.75) cand.push(e); }
     cand.sort((a,b)=>(a===q.split?-1:0)-(b===q.split?-1:0));
     for(const e of cand.slice(0,2)){
       const N=await findNeighbor(G,q,e,SW,SH);
