@@ -1,4 +1,4 @@
-const CACHE='quet-pdf-v16';
+const CACHE='quet-pdf-v17';
 const FILES=['./','./index.html','./docdet.js','./jspdf.umd.min.js','./manifest.webmanifest','./icon-192.png','./icon-512.png','./apple-touch-icon.png','./vendor/ort/ort.wasm.min.js','./vendor/ort/ort-wasm-simd-threaded.mjs'];
 // mô hình AI nặng: tải 1 lần rồi giữ trong bộ nhớ đệm riêng (không xoá khi app cập nhật)
 const MODEL_CACHE='quet-pdf-models-v2';

@@ -1035,8 +1035,8 @@ function qAlign(q,ref){
 }
 function qDiff(a,b,diag){ return Math.max(...a.map((p,i)=>dist(p,b[i])))/diag; }
 const qLerp=(a,b,t)=>a.map((p,i)=>[p[0]+(b[i][0]-p[0])*t, p[1]+(b[i][1]-p[1])*t]);
-let camPrev=null, camAgree=0;
-function camReset(){ camPrev=null; camAgree=0; camQ=null; camCand=null; camCandN=0; camMiss=0; camStable=0; camAutoCnt=0; camArmed=true; }
+let camSm=null, camAgree=0;
+function camReset(){ if(camSm) camSm.reset(); camAgree=0; camQ=null; camCand=null; camCandN=0; camMiss=0; camStable=0; camAutoCnt=0; camArmed=true; }
 function camMap(){
   const v=$('#camVideo'), cv=$('#camOverlay'), cw=cv.clientWidth, ch=cv.clientHeight;
   const s=Math.max(cw/v.videoWidth, ch/v.videoHeight);
@@ -1068,13 +1068,14 @@ async function camTick(){
   if(!q){ camMiss++; if(camMiss>(camSlow()?3:8)) camReset(); camAutoCnt=0; camAgree=0; }
   else if(camSlow()){
     // nhịp chậm (AI mạnh): 2 lần dò liên tiếp khớp nhau -> khoá khung; lần dò kế tiếp vẫn khớp -> tự chụp. Khung đổi nhiều -> bám theo ngay.
+    // làm mượt: trung bình vài lần dò gần nhất; bỏ lần kém tin cậy; chỉ đổi khung khi 2 lần dò liên tiếp cùng chỉ chỗ mới
     camMiss=0;
-    const ref=camPrev||camQ; if(ref) q=qAlign(q,ref);
-    const d=ref?qDiff(q,ref,diag):1;
-    camPrev=q.map(p=>p.slice());
-    if(d<0.02){ camAgree++; camQ=q; }
-    else { camAgree=0; camQ=q; camAutoCnt=0; if(d>=0.06) camArmed=true; }
-    camStable=camAgree+1;
+    if(!camSm) camSm=DocDet.makeSmoother({strongLoaded:true});
+    const r=camSm.update(q,diag);
+    if(r.quad) camQ=r.quad;
+    camAgree=r.agree; camStable=camQ?camAgree+1:0;
+    if(r.switched){ camAutoCnt=0; camArmed=true; }
+    else if(!r.ignored && camAgree===0) camAutoCnt=0;
   }
   else {
     camMiss=0;
