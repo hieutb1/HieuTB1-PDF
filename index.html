@@ -142,6 +142,9 @@ svg{display:block}
 .camhint{position:absolute;left:0;right:0;top:calc(68px + env(safe-area-inset-top,0px));text-align:center;pointer-events:none}
 .camhint span{display:inline-block;background:rgba(0,0,0,.55);color:#fff;font-size:14px;font-weight:600;padding:6px 14px;border-radius:20px}
 .camhint span.ok{background:var(--mint);color:#06221c}
+.camspin{position:absolute;left:calc(50% - 10px);top:calc(112px + env(safe-area-inset-top,0px));width:20px;height:20px;box-sizing:border-box;border:3px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:camspin .8s linear infinite;pointer-events:none}
+.camspin[hidden]{display:none}
+@keyframes camspin{to{transform:rotate(360deg)}}
 .cambot{position:absolute;left:0;right:0;bottom:0;padding:10px max(16px,env(safe-area-inset-right,0px)) calc(16px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));background:linear-gradient(transparent,rgba(0,0,0,.75) 30%)}
 .modes{display:flex;justify-content:center;gap:6px;margin-bottom:12px}
 .modes button{background:transparent;min-height:32px;padding:4px 12px;font-size:13px;color:rgba(255,255,255,.7);border-radius:16px}
@@ -333,6 +336,7 @@ input[type=file]{display:none}
     </div>
   </div>
   <div class="camhint"><span id="camHint">Đưa 1 trang giấy vào màn hình</span></div>
+  <div class="camspin" id="camSpin" hidden></div>
   <div class="cambot">
     <div class="modes" role="group" aria-label="Kiểu chụp">
       <button id="mOne" aria-pressed="false">Một trang</button>
@@ -1019,8 +1023,11 @@ let camAuto = store.get('auto','1')==='1';
 let shotMode = store.get('shotMode','many');
 let bookMode = store.get('book','0')==='1';
 let camTickMs=160;   // thời gian mỗi lần dò (làm mượt); AI chậm hơn nên cần ít lần dò hơn để khoá/tự chụp
-const AUTO_TICKS_N=()=>Math.max(2,Math.min(6,Math.round(1000/camTickMs)));
-const camLockN=()=>camTickMs>300?2:3;
+const PREVIEW_SIZE=224;   // cỡ ảnh đưa vào mô hình mạnh khi xem trước (lúc chụp luôn dùng 256)
+const PREVIEW_GAP=1000;   // mô hình mạnh dò khoảng 1 lần/giây; giữa các lần giữ nguyên khung cũ
+const camSlow=()=>aiOn()&&DocDet.has('S');
+const AUTO_TICKS_N=()=>camSlow()?2:Math.max(2,Math.min(6,Math.round(1000/camTickMs)));
+const camLockN=()=>camSlow()?2:(camTickMs>300?2:3);
 function qAlign(q,ref){
   let best=q, bd=1e18;
   for(let k=0;k<4;k++){ const r=[0,1,2,3].map(i=>q[(i+k)%4]); const d=r.reduce((s,p,i)=>s+dist(p,ref[i]),0); if(d<bd){bd=d;best=r;} }
@@ -1050,7 +1057,11 @@ async function camTick(){
   const v=$('#camVideo'); if(!v.videoWidth||camBusy) return;
   const diag=Math.hypot(v.videoWidth,v.videoHeight);
   let q;
-  if(aiOn()){ const t0=performance.now(); try{ q=await DocDet.detect(v,{fast:!DocDet.has('S'),edgeSide:320}); }catch(e){ q=null; } camTickMs=camTickMs*0.7+(performance.now()-t0)*0.3; }
+  if(aiOn()){
+    const t0=performance.now(), sp=$('#camSpin'); sp.hidden=false;
+    try{ q=await DocDet.detect(v,{fast:!DocDet.has('S'),size:PREVIEW_SIZE}); }catch(e){ q=null; }
+    sp.hidden=true; camTickMs=camTickMs*0.7+(performance.now()-t0)*0.3;
+  }
   else q=detectPage(v,{nullOnFail:true,maxSide:360,refineSide:640,book:bookMode});
   if(camBusy||!camStream) return;
   if(!q){ camMiss++; if(camMiss>8) camReset(); camAutoCnt=0; }
@@ -1110,12 +1121,12 @@ async function openCam(ret){
   try{ const tr=camStream.getVideoTracks()[0], caps=tr.getCapabilities?tr.getCapabilities():{}; $('#camTorch').hidden=!caps.torch; $('#camTorch').classList.remove('on'); }catch(e){ $('#camTorch').hidden=true; }
   camReset(); camUI();
   aiStart();
-  clearTimeout(camTimer); const loop=async()=>{ if(!camStream) return; const t0=performance.now(); try{ await camTick(); }catch(e){} if(!camStream) return; camTimer=setTimeout(loop, Math.max(30,120-(performance.now()-t0))); }; camTimer=setTimeout(loop,200);
+  clearTimeout(camTimer); const loop=async()=>{ if(!camStream) return; const t0=performance.now(); try{ await camTick(); }catch(e){} if(!camStream) return; camTimer=setTimeout(loop, Math.max(30,(camSlow()?PREVIEW_GAP:120)-(performance.now()-t0))); }; camTimer=setTimeout(loop,200);
 }
 function stopCam(){
   clearTimeout(camTimer); camTimer=null;
   if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
-  $('#camVideo').srcObject=null; $('#cam').hidden=true; camReset(); camRing(0);
+  $('#camVideo').srcObject=null; $('#cam').hidden=true; $('#camSpin').hidden=true; camReset(); camRing(0);
 }
 function finishCam(){
   stopCam();

@@ -3,7 +3,7 @@
 (function(){
 'use strict';
 const DD = window.DocDet = { ready:false, loading:null, failed:false, base:'./', log:()=>{} };
-let ort=null; const sess={}; const SIZES={S:'vendor/models/sa24_q8.onnx.gz', L:'vendor/models/lcnet100_q8.onnx.gz', T:'vendor/models/t8_q8.onnx.gz'};
+let ort=null; const sess={}; const SIZES={S:'vendor/models/sa24d_q8.onnx.gz', L:'vendor/models/lcnet100_q8.onnx.gz', T:'vendor/models/t8_q8.onnx.gz'};
 
 async function gunzip(buf){
   const h=new Uint8Array(buf,0,2); if(!(h[0]===0x1f&&h[1]===0x8b)) return buf;   // máy chủ đã tự giải nén sẵn
@@ -42,10 +42,12 @@ DD.init = function(opts){
 DD.has = k=>!!sess[k];
 
 /* ---------- chạy mô hình, lấy 4 góc (TL,TR,BR,BL) ---------- */
-const IN=256; let inC=null, inX=null;
-async function runModel(k, src){
+let inC=null, inX=null;
+async function runModel(k, src, size){
+  const IN=(k==='S'&&size)?size:256;   // chỉ mô hình mạnh (S) nhận cỡ nhỏ hơn; mô hình nhẹ cố định 256
   const SW=src.videoWidth||src.width, SH=src.videoHeight||src.height;
-  if(!inC){ inC=document.createElement('canvas'); inC.width=IN; inC.height=IN; inX=inC.getContext('2d',{willReadFrequently:true}); }
+  if(!inC) inC=document.createElement('canvas');
+  if(inC.width!==IN){ inC.width=IN; inC.height=IN; inX=inC.getContext('2d',{willReadFrequently:true}); }
   inX.imageSmoothingEnabled=true; inX.imageSmoothingQuality='low';   // mô hình học với kiểu thu nhỏ này (nội suy tuyến tính, không làm mịn)
   if(src.videoWidth){   // khung video: chép qua canvas trước, vì thu nhỏ trực tiếp từ video cho kết quả khác
     const k=Math.min(1,1280/Math.max(SW,SH)), vw=Math.round(SW*k), vh=Math.round(SH*k);
@@ -56,7 +58,7 @@ async function runModel(k, src){
   const px=inX.getImageData(0,0,IN,IN).data, n=IN*IN, f=new Float32Array(3*n);
   for(let i=0;i<n;i++){ f[i]=px[i*4+2]/255; f[n+i]=px[i*4+1]/255; f[2*n+i]=px[i*4]/255; }   // thứ tự BGR như DocAligner
   const out=await sess[k].run({img:new ort.Tensor('float32',f,[1,3,IN,IN])});
-  const hm=out.heatmap.data, HW=128, q=[], conf=[];
+  const hm=out.heatmap.data, HW=IN/2, q=[], conf=[];
   for(let c=0;c<4;c++){
     const o=c*HW*HW; let bi=0,bv=-1;
     for(let i=0;i<HW*HW;i++){ const v=hm[o+i]; if(v>bv){bv=v;bi=i;} }
@@ -165,7 +167,7 @@ DD.detect = async function(src,opts){
     let best=null;
     for(const k of order){
       if(!sess[k]) continue;
-      const q=await runModel(k,src); if(!valid(q,SW,SH)) continue;
+      const q=await runModel(k,src,opts.size); if(!valid(q,SW,SH)) continue;
       const sup=edgeSupport(q,P), mn=minOf(sup);
       info[k]={sup,mn};
       const weak=[]; sup.forEach((v,i)=>{ if(v<0.5) weak.push(i); });
