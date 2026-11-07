@@ -304,22 +304,27 @@ DD.detect = async function(src,opts){
     const SW=src.videoWidth||src.width, SH=src.videoHeight||src.height, t0=performance.now();
     const P=prep(src,opts.edgeSide||480); const info={};
     const fastK=sess.T?'T':'L';
-    const order=(opts.fast||!sess.S)?[fastK]:['S',fastK];
+    // thử lần lượt: mô hình mạnh ở cỡ yêu cầu, rồi các cỡ khác (kết quả đổi theo cỡ nên một cỡ hỏng thì cỡ khác thường đúng), rồi mô hình nhẹ
+    const s0=opts.size||256, sizes=[s0].concat([256,224,192].filter(z=>z!==s0));
+    const order=(opts.fast||!sess.S)?[{k:fastK}]:sizes.map(z=>({k:'S',size:z})).concat([{k:fastK}]);
     let best=null;
-    for(const k of order){
-      if(!sess[k]) continue;
-      const q=await runModel(k,src,opts.size); if(!valid(q,SW,SH)) continue;
-      const sup=edgeSupport(q,P), mn=minOf(sup);
-      info[k]={sup,mn};
+    for(const o of order){
+      const k=o.k; if(!sess[k]) continue;
+      const q=await runModel(k,src,o.size); if(!valid(q,SW,SH)) continue;
+      const tag=k+(o.size&&o.size!==256?o.size:''), sup=edgeSupport(q,P), mn=minOf(sup);
+      info[tag]={sup,mn};
+      // cạnh đối diện của một trang phẳng phải gần song song (chênh quá 25° là khung méo)
+      const par=Math.max(angBetween([q[1][0]-q[0][0],q[1][1]-q[0][1]],[q[2][0]-q[3][0],q[2][1]-q[3][1]]),angBetween([q[3][0]-q[0][0],q[3][1]-q[0][1]],[q[2][0]-q[1][0],q[2][1]-q[1][1]]));
       const weak=[]; sup.forEach((v,i)=>{ if(v<0.5) weak.push(i); });
-      if(!weak.length){ best={q,k,sup}; break; }
+      if(par>25 && weak.length!==1){ info[tag].par=Math.round(par); if(!best) best={q,k:tag+'?',sup,mn:mn*0.5}; continue; }   // đúng 1 cạnh yếu thì để bước sửa cạnh gáy xử lý
+      if(!weak.length){ best={q,k:tag,sup}; break; }
       if(weak.length===1){
         const e=weak[0], a=q[e], b=q[(e+1)%4], o1=q[(e+2)%4], o0=q[(e+3)%4];
-        if(angBetween([b[0]-a[0],b[1]-a[1]],[o1[0]-o0[0],o1[1]-o0[1]])<10){ q.split=e; best={q,k:k+'g',sup}; break; }   // cạnh gáy: yếu mép nhưng thẳng hàng
+        if(angBetween([b[0]-a[0],b[1]-a[1]],[o1[0]-o0[0],o1[1]-o0[1]])<10){ q.split=e; best={q,k:tag+'g',sup}; break; }   // cạnh gáy: yếu mép nhưng thẳng hàng
         const rq=repairEdge(q,sup,P);
-        if(rq&&valid(rq,SW,SH)){ rq.conf=q.conf; best={q:rq,k:k+'+sửa',sup:edgeSupport(rq,P)}; break; }
+        if(rq&&valid(rq,SW,SH)){ rq.conf=q.conf; best={q:rq,k:tag+'+sửa',sup:edgeSupport(rq,P)}; break; }
       }
-      if(!best||mn>best.mn) best={q,k:k+'?',sup,mn};
+      if(!best||mn>best.mn) best={q,k:tag+'?',sup,mn};
     }
     if(!best) return null;
     let q=best.q.map(p=>[Math.min(SW,Math.max(0,p[0])),Math.min(SH,Math.max(0,p[1]))]);

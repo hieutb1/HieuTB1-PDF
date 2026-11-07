@@ -954,7 +954,7 @@ function thumb(p){
   return p._tc;
 }
 function newPage(base, quad){
-  const q=quad||detectPage(base,{book:bookMode});
+  const q=quad||detectPage(base,{book:true});
   return {id:uid(), base, quad:q, warped:isFull(q,base)?null:warp(base,q), rot:0, filter:store.get('filter','enhance'), ver:0};
 }
 
@@ -997,7 +997,7 @@ const edUp=()=>{ if(ed.drag>=0){ ed.drag=-1; edDraw(); } };
 $('#edCanvas').addEventListener('pointerup',edUp);
 $('#edCanvas').addEventListener('pointercancel',edUp);
 $('#edFull').onclick=()=>{ ed.q=fullQuad(ed.page.base); edDraw(); };
-$('#edAuto').onclick=async()=>{ busy(true,'Đang tìm mép giấy…'); await tick(); try{ ed.q=(await detectSmart(ed.page.base,{book:bookMode})).map(v=>v.slice()); }catch(e){} busy(false); edDraw(); };
+$('#edAuto').onclick=async()=>{ busy(true,'Đang tìm mép giấy…'); await tick(); try{ ed.q=(await detectSmart(ed.page.base,{book:true})).map(v=>v.slice()); }catch(e){} busy(false); edDraw(); };
 $('#edCancel').onclick=()=>{ $('#editor').hidden=true; const r=ed.resolve; ed.resolve=null; r&&r(); };
 $('#edOk').onclick=async()=>{
   const p=ed.page, q=ed.q.map(v=>v.slice());
@@ -1009,7 +1009,7 @@ $('#edOk').onclick=async()=>{
 };
 function editPage(p,label){
   return new Promise(res=>{
-    ed.page=p; ed.q=(p.quad||detectPage(p.base,{book:bookMode})).map(v=>v.slice()); ed.drag=-1; ed.resolve=res;
+    ed.page=p; ed.q=(p.quad||detectPage(p.base,{book:true})).map(v=>v.slice()); ed.drag=-1; ed.resolve=res;
     $('#edCount').textContent=label||'';
     $('#editor').hidden=false;
     requestAnimationFrame(edLayout);
@@ -1063,7 +1063,7 @@ async function camTick(){
     try{ q=await DocDet.detect(v,{fast:!DocDet.has('S'),size:PREVIEW_SIZE}); }catch(e){ q=null; }
     sp.hidden=true; camTickMs=camTickMs*0.7+(performance.now()-t0)*0.3;
   }
-  else q=detectPage(v,{nullOnFail:true,maxSide:360,refineSide:640,book:bookMode});
+  else q=detectPage(v,{nullOnFail:true,maxSide:360,refineSide:640,book:true});
   if(camBusy||!camStream) return;
   if(!q){ camMiss++; if(camMiss>(camSlow()?3:8)) camReset(); camAutoCnt=0; camAgree=0; }
   else if(camSlow()){
@@ -1154,7 +1154,7 @@ async function camShoot(){
   try{ if(navigator.vibrate) navigator.vibrate(30); }catch(e){}
   await tick();
   try{
-    let q=await detectSmart(c,{nullOnFail:true,book:bookMode});
+    let q=await detectSmart(c,{nullOnFail:true,book:true});
     if(camQ){
       const shown=camQ.map(p=>[p[0]*k,p[1]*k]), diag=Math.hypot(c.width,c.height);
       if(!q) q=shown;   // ảnh chụp nét hơn ảnh xem trước nên ưu tiên kết quả trên ảnh chụp
@@ -1486,7 +1486,7 @@ async function importFiles(fileList){
   const start=pages.length;
   for(let i=0;i<files.length;i++){
     busy(true, files.length>1?`Đang cắt ảnh ${i+1}/${files.length}…`:'Đang cắt ảnh…'); await tick();
-    try{ const bc=await fileToCanvas(files[i]); pages.push(newPage(bc, await detectSmart(bc,{book:bookMode}))); }catch(e){ toast('Không đọc được một ảnh, hãy thử ảnh khác.'); }
+    try{ const bc=await fileToCanvas(files[i]); pages.push(newPage(bc, await detectSmart(bc,{book:true}))); }catch(e){ toast('Không đọc được một ảnh, hãy thử ảnh khác.'); }
   }
   busy(false);
   if(pages.length>start) openReview(start);
